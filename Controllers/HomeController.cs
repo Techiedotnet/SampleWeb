@@ -6,6 +6,9 @@ using System.Web.Mvc;
 
 namespace SampleWeb.Controllers
 {
+    /// <summary>
+    /// Controller for all actions related to home
+    /// </summary>
     public class HomeController : Controller
     {
         public ActionResult Index()
