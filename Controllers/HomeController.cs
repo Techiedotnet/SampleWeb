@@ -11,11 +11,13 @@ namespace SampleWeb.Controllers
     /// </summary>
     public class HomeController : Controller
     {
+    //test
         public ActionResult Index()
         {
             return View();
         }
 
+//test
         public ActionResult About()
         {
             ViewBag.Message = "Your application description page.";
