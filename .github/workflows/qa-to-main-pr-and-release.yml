@@ -1,0 +1,120 @@
+name: QA to Main PR and Release Branch Workflow
+
+on:
+  # Manual trigger with release branch name input
+  workflow_dispatch:
+    inputs:
+      release_branch_name:
+        description: 'Name of the release branch (e.g., release_1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  create-pr:
+    name: Create PR from QA to Main
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.create-pr.outputs.pr_number }}
+      pr_url: ${{ steps.create-pr.outputs.pr_url }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Fetch all history for all branches
+
+      - name: Verify branches exist
+        run: |
+          git fetch origin
+          if ! git rev-parse --verify origin/QA &> /dev/null; then
+            echo "::error::QA branch does not exist!"
+            exit 1
+          fi
+          if ! git rev-parse --verify origin/main &> /dev/null; then
+            echo "::error::main branch does not exist!"
+            exit 1
+          fi
+
+          git diff --quiet origin/QA origin/main || DIFFERENCES_FOUND=true
+          if [ "$DIFFERENCES_FOUND" = "true" ]; then
+            echo "Branches have differences, a PR is needed."
+          else
+            echo "::warning::QA and main branches are identical. A PR may not be created."
+          fi
+
+      - name: Create Pull Request
+        id: create-pr
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Merge QA into Main',
+              head: 'QA',
+              base: 'main',
+              body: `This PR merges the QA branch into main.
+              
+              Upon approval, a release branch named \`${{ github.event.inputs.release_branch_name }}\` will be created.`
+            });
+            
+            console.log(`PR created: ${pr.html_url}`);
+            
+            core.setOutput('pr_number', pr.number.toString());
+            core.setOutput('pr_url', pr.html_url);
+      
+      - name: PR Creation Debug
+        run: |
+          echo "PR Number: ${{ steps.create-pr.outputs.pr_number }}"
+          echo "PR URL: ${{ steps.create-pr.outputs.pr_url }}"
+          if [ -z "${{ steps.create-pr.outputs.pr_number }}" ]; then
+            echo "::warning::No PR number was returned - PR may not have been created"
+          else
+            echo "::notice::PR #${{ steps.create-pr.outputs.pr_number }} created: ${{ steps.create-pr.outputs.pr_url }}"
+          fi
+
+  create-release-branch:
+    name: Create Release Branch
+    runs-on: ubuntu-latest
+    needs: create-pr
+    if: ${{ needs.create-pr.outputs.pr_number != '' }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          ref: main
+
+      - name: Wait for PR approval and merge
+        id: wait-for-merge
+        run: |
+          PR_NUMBER=${{ needs.create-pr.outputs.pr_number }}
+          MERGED="false"
+          
+          while [ "$MERGED" != "true" ]; do
+            PR_STATE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER" \
+              | jq -r '.merged')
+            
+            if [ "$PR_STATE" == "true" ]; then
+              MERGED="true"
+              echo "PR has been merged!"
+              break
+            fi
+            
+            echo "Waiting for PR to be merged... will check again in 60 seconds"
+            sleep 60
+          done
+          
+      - name: Create Release Branch
+        run: |
+          git fetch --all
+          git checkout main
+          git pull
+          git checkout -b ${{ github.event.inputs.release_branch_name }}
+          git push -u origin ${{ github.event.inputs.release_branch_name }}
+          
+      - name: Release Branch Information
+        run: |
+          echo "::notice::Release branch '${{ github.event.inputs.release_branch_name }}' created successfully"
